@@ -1,19 +1,17 @@
+# src/data_processing.py
+
 import pandas as pd
 import numpy as np
-from typing import Tuple, Dict, List 
-import logging 
-from pathlib import Path 
+from typing import Tuple, Dict, List, Optional
+import logging
+from pathlib import Path
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder # Needed for target encoding if C_AGRI isn't 0-based numerical
 
 class DataProcessor:
     """
-    A class to handle all the data preprocessing and feature engineering
-    of Manitoba soil dataset
-
-    Attributes: 
-    data_path (Path): path to raw data file
-    target_column (str): Name of the target variable('AGRI_CAP1')
-    random_state (int): Random state for reproducibility
-
+    A class to handle data loading, preprocessing, and splitting
+    for the Manitoba soil dataset using a three-way split (Train+Validation / Test).
     """
 
     def __init__(
@@ -23,197 +21,448 @@ class DataProcessor:
             random_state: int = 419
     ):
         """
-         Initialize the DataProcessor with the data path and configurations.
-        
+        Initialize the DataProcessor with the data path and configurations.
+
         Args:
-            data_path (Path): Path to the raw data file
-            target_column (str): Name of the target variable
-            random_state (int): Random state for reproducibility
-        
+            data_path (Path): Path to the raw data file (subset of 10k rows).
+            target_column (str): Name of the target variable.
+            random_state (int): Random state for reproducibility.
         """
         self.data_path = data_path
         self.target_column = target_column
         self.random_state = random_state
-        self.data = None
-        self.data_copy = None
-        self.X = None
-        self.y = None
-        
 
-        # Set up logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        self.raw_data = None # Store the original loaded data
+        self.processed_data = None # Store data after preprocessing
+
+        self.label_encoder = LabelEncoder() # Initialize label encoder for the target
+
+
+        # Set up logging (ensure basicConfig is called only once)
+        if not logging.getLogger(__name__).handlers:
+             logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+             )
         self.logger = logging.getLogger(__name__)
 
         try:
-            # Create a copy of the original data
-            self.data = pd.read_csv(self.data_path)
-            self.data_copy = self.data.copy()
-            self.logger.info("A copy of the original data has been created.")
+            # Load data upon initialization
+            self.raw_data = self.load_data(self.data_path)
+            self.logger.info("DataProcessor initialized and raw data loaded.")
+
         except Exception as e:
-            self.logger.error(f'Failed to initialized and copy data: {str(e)}')
+            self.logger.error(f'Failed to initialize or load data: {str(e)}')
             raise
 
-    def load_data(self) -> pd.DataFrame:
+    def load_data(self, data_path: Path) -> pd.DataFrame:
         """
-        Loads soil dataset from the specified path 
-        Returns: pd.Dataframe: the loaded dataset
+        Loads the dataset from the specified path.
+
+        Args:
+            data_path (Path): Path to the raw data file.
+
+        Returns:
+            pd.DataFrame: The loaded dataset.
         """
         try:
-            self.logger.info(f"Loading data from {self.data_path}")
-            self.data = pd.read_csv(self.data_path)
-            self.logger.info(f"Successfully loaded dataset with the shape {self.data.shape}")
-            return self.data
+            self.logger.info(f"Loading data from {data_path}")
+            data = pd.read_csv(data_path)
+            self.logger.info(f"Successfully loaded dataset with the shape {data.shape}")
+            return data
+        except FileNotFoundError:
+             self.logger.error(f"Data file not found at: {data_path}")
+             raise
         except Exception as e:
             self.logger.error(f"Error loading data: {str(e)}")
-            raise 
+            raise
 
-    
+    def preprocess(self) -> pd.DataFrame:
+        """
+        Applies all defined preprocessing steps to the raw data.
+        Keeps ORIGINL_RM, the target column, and all newly created columns,
+        dropping other original columns not explicitly kept or transformed.
+        Stores the result in self.processed_data.
+
+        Returns:
+            pd.DataFrame: The fully processed dataframe with selected columns.
+        """
+        self.logger.info("Starting full data preprocessing pipeline...")
+
+        if self.raw_data is None:
+            self.logger.error("No raw data loaded.")
+            raise ValueError("No raw data loaded for preprocessing.")
+
+        # Work on a copy of the raw data
+        processed_data = self.raw_data.copy()
+
+        # Keep track of columns that exist initially
+        original_cols_set = set(processed_data.columns)
+        # Keep track of columns we definitely want in the final output
+        cols_to_keep_final_set = {'ORIGINL_RM', self.target_column}
+
+        # Ensure ORIGINL_RM and target exist initially before processing
+        if 'ORIGINL_RM' not in original_cols_set:
+             self.logger.warning("'ORIGINL_RM' column not found in raw data.")
+             cols_to_keep_final_set.discard('ORIGINL_RM') # Don't try to keep if missing
+
+        if self.target_column not in original_cols_set:
+             self.logger.error(f"Target column '{self.target_column}' not found in raw data.")
+             raise ValueError(f"Target column '{self.target_column}' not found in raw data.")
+
+
+        try:
+            # --- Apply specific processing steps and track newly created columns ---
+
+            # Step 1: MANCON Flags
+            cols_before = set(processed_data.columns)
+            processed_data = self.create_mancon_flags(processed_data)
+            cols_after = set(processed_data.columns)
+            newly_created_step1 = cols_after - cols_before
+            cols_to_keep_final_set.update(newly_created_step1)
+            self.logger.debug(f"Step 1 created columns: {newly_created_step1}")
+
+
+            # Step 2: Weighted MANCON
+            cols_before = set(processed_data.columns)
+            processed_data = self.create_weighted_mancon(processed_data)
+            cols_after = set(processed_data.columns)
+            newly_created_step2 = cols_after - cols_before
+            cols_to_keep_final_set.update(newly_created_step2)
+            self.logger.debug(f"Step 2 created columns: {newly_created_step2}")
+
+
+            # Step 3: ERPOLY Processing
+            cols_before = set(processed_data.columns)
+            processed_data = self.erpoly_processor(processed_data)
+            cols_after = set(processed_data.columns)
+            newly_created_step3 = cols_after - cols_before
+            cols_to_keep_final_set.update(newly_created_step3)
+            self.logger.debug(f"Step 3 created columns: {newly_created_step3}")
+
+
+            # Step 4: Classification Processing (Standard encoding and flags)
+            cols_before = set(processed_data.columns)
+            processed_data = self.classification_processing(processed_data)
+            cols_after = set(processed_data.columns)
+            newly_created_step4 = cols_after - cols_before
+            cols_to_keep_final_set.update(newly_created_step4)
+            self.logger.debug(f"Step 4 created columns: {newly_created_step4}")
+
+            self.logger.info("Specific preprocessing steps applied.")
+
+
+            # --- Handle remaining categorical features (One-Hot Encoding) ---
+            # Identify categorical columns *after* specific processing but before OHE
+            # Exclude columns we already decided to keep (like ORIGINL_RM if it's object)
+            # and the target column.
+            categorical_cols_for_ohe = [
+                col for col in processed_data.columns
+                if processed_data[col].dtype == 'object'
+                   and col not in cols_to_keep_final_set # Don't OHE columns we already want to keep by name/pattern
+                   and col != 'OBJECTID' # Explicitly exclude OBJECTID if it survived and is object
+            ]
+
+            if categorical_cols_for_ohe:
+                 self.logger.info(f"One-Hot Encoding remaining categorical columns: {categorical_cols_for_ohe}")
+                 # Handle potential NaNs in categorical columns before one-hot encoding
+                 for col in categorical_cols_for_ohe:
+                     processed_data[col] = processed_data[col].fillna('Missing') # Or use a more sophisticated imputation
+
+                 cols_before_ohe = set(processed_data.columns)
+                 processed_data = pd.get_dummies(processed_data, columns=categorical_cols_for_ohe, dummy_na=False)
+                 cols_after_ohe = set(processed_data.columns)
+                 newly_created_by_ohe = cols_after_ohe - cols_before_ohe
+                 cols_to_keep_final_set.update(newly_created_by_ohe) # Add OHE columns to the keep list
+                 self.logger.debug(f"OHE created columns: {newly_created_by_ohe}")
+            else:
+                 self.logger.info("No remaining categorical columns to One-Hot Encode.")
+
+
+            # --- Handle remaining numerical missing values if any ---
+            # This applies to any numerical column left (original or newly created)
+            numerical_cols_with_nan = processed_data.select_dtypes(include=np.number).columns[processed_data.select_dtypes(include=np.number).isna().any()]
+            if numerical_cols_with_nan.size > 0:
+                self.logger.warning(f"Numerical columns with missing values after processing: {list(numerical_cols_with_nan)}. Filling with median.")
+                for col in numerical_cols_with_nan:
+                    if not processed_data[col].isna().all():
+                         processed_data[col] = processed_data[col].fillna(processed_data[col].median())
+                    else:
+                         self.logger.warning(f"Column '{col}' is all NaN, cannot fill with median. Consider dropping or other imputation.")
+
+
+            # --- Target Encoding ---
+            # Encode the target column if it's not already numerical and 0-based
+            # This step remains the same as it's crucial for the model, regardless of other columns
+            # It ensures the target column is in the correct format and handles NaNs in target.
+            if self.target_column in processed_data.columns:
+                 if not pd.api.types.is_numeric_dtype(processed_data[self.target_column]) or (processed_data[self.target_column].min() != 0 if pd.api.types.is_numeric_dtype(processed_data[self.target_column]) else True):
+                    self.logger.info(f"Encoding target column '{self.target_column}' using LabelEncoder.")
+                    target_values_str = processed_data[self.target_column].astype(str).replace('nan', np.nan)
+                    valid_target_values = target_values_str.dropna()
+                    if not valid_target_values.empty:
+                        self.label_encoder.fit(valid_target_values)
+                        if processed_data[self.target_column].isna().any():
+                             self.logger.warning(f"NaN values found in target column '{self.target_column}'. Dropping rows with NaN target.")
+                             processed_data.dropna(subset=[self.target_column], inplace=True)
+                             # Refit encoder on cleaned data if needed
+                             target_values_str = processed_data[self.target_column].astype(str).replace('nan', np.nan)
+                             valid_target_values = target_values_str.dropna()
+                             if not valid_target_values.empty: self.label_encoder.fit(valid_target_values)
+
+                        if not valid_target_values.empty:
+                             processed_data[self.target_column] = self.label_encoder.transform(processed_data[self.target_column].astype(str))
+                             self.logger.info(f"Encoded target classes (mapping): {dict(zip(self.label_encoder.classes_, self.label_encoder.transform(self.label_encoder.classes_)))}")
+                             self.logger.info(f"Encoded target values sample: {processed_data[self.target_column].head()}")
+                        else:
+                             self.logger.error("No valid target values remaining after handling NaNs. Cannot encode.")
+                             raise ValueError("No valid target values after handling NaNs.")
+                 else:
+                    self.logger.info(f"Target column '{self.target_column}' is already numeric and 0-based or will be handled by XGBoost.")
+            else:
+                 self.logger.error(f"Target column '{self.target_column}' missing after preprocessing steps.")
+                 raise ValueError(f"Target column '{self.target_column}' missing after preprocessing.")
+
+
+            # --- Final Column Selection ---
+            self.logger.info("Performing final column selection...")
+            final_cols_set = set(processed_data.columns)
+            # Identify columns to drop: all columns currently in the DataFrame
+            # MINUS the set of columns we've decided to keep
+            cols_to_drop_final = list(final_cols_set - cols_to_keep_final_set)
+
+            if cols_to_drop_final:
+                self.logger.info(f"Dropping columns not explicitly kept or newly created ({len(cols_to_drop_final)} columns)...")
+                # self.logger.debug(f"Columns being dropped: {cols_to_drop_final}") # Can be very verbose
+                processed_data = processed_data.drop(columns=cols_to_drop_final, errors='ignore')
+            else:
+                self.logger.info("No additional columns to drop based on final selection criteria.")
+
+            self.logger.info(f"Final processed data shape: {processed_data.shape}")
+
+
+            # Store the processed data
+            self.processed_data = processed_data
+            self.logger.info("Full data preprocessing pipeline completed.")
+
+            return self.processed_data
+
+        except Exception as e:
+            self.logger.error(f"Error during full preprocessing pipeline: {str(e)}")
+            raise
+
+
+    def split_data_three_way(self, test_size: float = 0.2, random_state: int = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+        """
+        Splits the processed data into training+validation and testing sets.
+        The training+validation set is used for hyperparameter tuning via CV.
+        The test set is reserved for final, unbiased evaluation.
+
+        Args:
+            test_size (float): The proportion of the dataset to include in the test split.
+            random_state (int): Controls the shuffling applied to the data before applying the split.
+
+        Returns:
+            Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+                X_train_val, X_test, y_train_val, y_test
+        """
+        self.logger.info(f"Splitting processed data into Train+Validation and Test sets (test_size={test_size})...")
+
+        if self.processed_data is None:
+             self.logger.error("No processed data available. Call preprocess() first.")
+             raise ValueError("No processed data available for splitting.")
+
+        if self.target_column not in self.processed_data.columns:
+             self.logger.error(f"Target column '{self.target_column}' not found in processed data.")
+             raise ValueError(f"Target column '{self.target_column}' not found.")
+
+        # Separate features (X) and target (y) from the full processed data
+        X_full = self.processed_data.drop(columns=[self.target_column])
+        y_full = self.processed_data[self.target_column]
+        self.logger.info(f"Separated features (shape: {X_full.shape}) and target (shape: {y_full.shape}) for splitting.")
+
+
+        try:
+            # Perform the initial Train+Validation / Test split
+            # Stratify if it's a classification target (check if y is suitable for stratification)
+            stratify_y = None
+            if pd.api.types.is_numeric_dtype(y_full) and y_full.nunique() > 1 and y_full.nunique() < 50: # Arbitrary limit for stratification
+                 self.logger.info("Stratifying split based on target distribution.")
+                 stratify_y = y_full
+            elif pd.api.types.is_numeric_dtype(y_full) and y_full.nunique() >= 50:
+                 self.logger.warning("Target has too many unique values for stratification. Skipping stratification.")
+            elif not pd.api.types.is_numeric_dtype(y_full):
+                 self.logger.warning("Target is not numeric. Cannot stratify.")
+            else:
+                 self.logger.warning("Target has only one unique value or is not suitable for stratification. Skipping stratification.")
+
+
+            X_train_val, X_test, y_train_val, y_test = train_test_split(
+                X_full, y_full,
+                test_size=test_size,
+                random_state=random_state if random_state is not None else self.random_state,
+                stratify=stratify_y
+            )
+
+            self.logger.info(f"Split complete. Train+Validation set shape: {X_train_val.shape}, Test set shape: {X_test.shape}")
+            # Log distributions only if stratified or few unique values
+            if stratify_y is not None or y_full.nunique() < 10:
+                self.logger.info(f"Train+Validation target distribution:\n{y_train_val.value_counts(normalize=True)}")
+                self.logger.info(f"Test target distribution:\n{y_test.value_counts(normalize=True)}")
+
+
+            return X_train_val, X_test, y_train_val, y_test
+
+        except Exception as e:
+            self.logger.error(f"Error during three-way data splitting: {str(e)}")
+            raise
+
+
+    # --- Helper processing methods (they accept and return DataFrames) ---
+
     def create_mancon_flags(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Creates binary flags for each management consideration
-        in the MANCON columns.
-        """
-        management_codes = {
-            'F': 'fine_texture',
-            'W': 'wetness',
-            'T': 'topography',
-            'C': 'coarse_texture',
-            'B': 'bedrock',
-            # Add special cases
-            'NO CONSTRAINTS': 'no_constraints',
-            'ROCK': 'rock',
-            'ORGANIC': 'organic',
-            'MARSH' : 'marsh',
-            'WATER': 'water'
-        }
-        
-        try:
-            # Initialize all flags to 0
-            for code_meaning in management_codes.values():
-                data[f'has_{code_meaning}'] = 0
-            
-            # For each MANCON column, check for presence of each code
-            for mancon_col in ['MANCON1', 'MANCON2', 'MANCON3']:
-                # Clean the data - remove spaces and convert to uppercase
-                data[mancon_col] = data[mancon_col].str.strip().str.upper()
-                
-                for code, meaning in management_codes.items():
-                    # Update flag if code is found in the MANCON string
-                    mask = data[mancon_col].str.contains(code, na=False, regex=False)
-                    data.loc[mask, f'has_{meaning}'] = 1
-            
-            return data
-            
-        except Exception as e:
-            self.logger.error(f'Error in creating mancon flags: {str(e)}')
-            raise
-    
+         """
+         Creates binary flags for each management consideration.
+         (Ensure your implementation takes and returns DataFrame)
+         """
+         # Example implementation sketch (replace with your actual code)
+         management_codes = { 'F': 'fine_texture', 'W': 'wetness', 'T': 'topography', 'C': 'coarse_texture', 'B': 'bedrock',
+                              'NO CONSTRAINTS': 'no_constraints', 'ROCK': 'rock', 'ORGANIC': 'organic', 'MARSH' : 'marsh', 'WATER': 'water'}
+         for code_meaning in management_codes.values(): data[f'has_{code_meaning}'] = 0
+         for mancon_col in ['MANCON1', 'MANCON2', 'MANCON3']:
+             if mancon_col in data.columns:
+                 data[mancon_col] = data[mancon_col].astype(str).str.strip().str.upper()
+                 for code, meaning in management_codes.items():
+                     mask = data[mancon_col].str.contains(code, na=False, regex=False)
+                     data.loc[mask, f'has_{meaning}'] = 1
+         return data
 
-    def create_weighted_mancon(self, data: pd.DataFrame) -> pd.Series:
-        """
-        Function that gives a weighted score to each MANCON column by summing up the 
-        total number of management considerations for each row and multiplying it by 
-        the EXTENT columns
-        eg: FWT has 3 characters(management considerations) -> 3 * EXTENT1 / 100 = W_MANCON1
-        """
-        management_list = ['F', 'W', 'T', 'C', 'B']
-        mancon_columns = ['MANCON1', 'MANCON2', 'MANCON3']
-        extent_columns = ['EXTENT1', 'EXTENT2', 'EXTENT3']
-        
-        try:
-            # Fill NaN with empty string to avoid errors in string operations
-            data[mancon_columns] = data[mancon_columns].fillna('')
-
-            # Remove whitespace from columns
-            data[mancon_columns] = data[mancon_columns].applymap(lambda x: x.replace(" ", "") if isinstance(x, str) else x)
-            
-            # Process each MANCON-EXTENT pair
-            for mancon, extent in zip(mancon_columns, extent_columns):
-                # Count total management considerations in each MANCON column
-                total_counts = sum(data[mancon].str.count(code) for code in management_list)
-                # Calculate weighted score
-                data[f'W_{mancon}'] = total_counts * data[extent].fillna(0) / 100
-                
-            # Create total weighted MANCON column
-            data['Total_W_MANCON'] = data['W_MANCON1'] + data['W_MANCON2'] + data['W_MANCON3']
-            return data['Total_W_MANCON']
-            
-        except Exception as e:
-            self.logger.error(f'Error in creating Total_weighted_mancon: {str(e)}')
-            raise
+    def create_weighted_mancon(self, data: pd.DataFrame) -> pd.DataFrame:
+         """
+         Calculates the weighted management consideration score.
+         (Ensure your implementation takes and returns DataFrame)
+         """
+         # Example implementation sketch (replace with your actual code)
+         management_list = ['F', 'W', 'T', 'C', 'B']
+         mancon_columns = ['MANCON1', 'MANCON2', 'MANCON3']
+         extent_columns = ['EXTENT1', 'EXTENT2', 'EXTENT3']
+         data[mancon_columns] = data[mancon_columns].fillna('')
+         data[mancon_columns] = data[mancon_columns].applymap(lambda x: x.replace(" ", "") if isinstance(x, str) else x)
+         for extent_col in extent_columns:
+             if extent_col in data.columns: data[extent_col] = pd.to_numeric(data[extent_col], errors='coerce').fillna(0)
+             else: data[extent_col] = 0
+         for mancon, extent in zip(mancon_columns, extent_columns):
+             if mancon in data.columns:
+                 total_counts = data[mancon].apply(lambda x: sum(x.count(code) for code in management_list) if isinstance(x, str) else 0)
+                 data[f'W_{mancon}'] = total_counts * data[extent] / 100
+             else: data[f'W_{mancon}'] = 0
+         weighted_cols_to_sum = [col for col in [f'W_{mc}' for mc in mancon_columns] if col in data.columns]
+         data['Total_W_MANCON'] = data[weighted_cols_to_sum].sum(axis=1)
+         return data # Ensure you return the DataFrame
 
 
     def erpoly_processor(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        The ERPOLY column is a summary of the ERCLS(water erosion risk class) columns
-        This function encodes the ERPOLY column values numerically (N=1, L=2, M=3, H=4, S=5)
-        """
-        category_mapping = {
-        "N": 1,  # Negligible
-        "L": 2,  # Low
-        "M": 3,  # Moderate
-        "H": 4,  # High
-        "S": 5   # Severe
-
-        }
-        try:
-            # Apply the mapping to the column
-            # If key isn't found, assign 0 as default value 
-            data['encoded_ERPOLY'] = data['ERPOLY'].map(category_mapping).fillna(0)
-            
-            # Create flag to check if value is missing
-            data['ERPOLY_missing'] = data['ERPOLY'].isna().astype(int)
-
-            return data
-        
-        except Exception as e:
-            self.logger.error(f'Error in encoding ERPOLY: {str(e)}')
-            raise
+         """
+         Encodes the ERPOLY column and creates a missing flag.
+         (Ensure your implementation takes and returns DataFrame)
+         """
+         # Example implementation sketch (replace with your actual code)
+         category_mapping = {"N": 1, "L": 2, "M": 3, "H": 4, "S": 5}
+         if 'ERPOLY' in data.columns:
+             data['ERPOLY_missing'] = data['ERPOLY'].isna().astype(int)
+             data['encoded_ERPOLY'] = data['ERPOLY'].map(category_mapping).fillna(0)
+         else:
+             data['encoded_ERPOLY'] = 0
+             data['ERPOLY_missing'] = 1
+         return data # Ensure you return the DataFrame
 
 
     def classification_processing(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        This method preprocesses the classification columns
-        (C_SLOPE, C_DRAIN etc) by subtracting 20 from 
-        """
-        class_columns = ['C_SLOPE', 'C_DRAIN', 'C_SALT', 'C_SURFTEXT', 'C_AGRI']
-        try:
-            for c_column in class_columns:
-                # Create new columns for encoded values
-                encoded_col = f'encoded_{c_column}'
-                data[encoded_col] = 0
+         """
+         Processes classification columns (C_SLOPE etc.) and potentially the target (C_AGRI)
+         by encoding standard values (21-28 -> 1-8) and creating binary flags for special codes (6, 7, 13, 16).
+         Accepts a DataFrame and returns the modified DataFrame.
+         NOTE: Target encoding for the model (e.g., mapping 'Good'/'Poor' to 0/1) should
+         be handled by self.label_encoder in the main preprocess method after calling this.
+         """
+         self.logger.info("Processing classification columns...")
+         # Define the classification columns to process
+         # Include C_AGRI here if you want these flags added for the target column too,
+         # otherwise, process only feature columns here.
+         # Based on your previous code, let's include C_AGRI here for flag creation.
+         class_columns = ['C_SLOPE', 'C_DRAIN', 'C_SALT', 'C_SURFTEXT', 'C_AGRI']
 
-                # Create mask for standard range (21-28)
-                mask = (data[c_column] >= 21) & (data[c_column] <= 28)
+         try:
+             for c_column in class_columns:
+                  if c_column in data.columns: # Check if column exists
 
-                # Encode standard values by subtracting 20
-                data.loc[mask, encoded_col] = data.loc[mask, c_column] - 20
-
-                # Create binary flags for special codes 6,7,13,16
-                data[f'{c_column}_is_water'] = (data[c_column] == 6).astype(int)
-                data[f'{c_column}_is_urban'] = (data[c_column] == 16).astype(int)
-                data[f'{c_column}_is_marsh'] = (data[c_column] == 13).astype(int)
-                data[f'{c_column}_is_erodedSlope'] = (data[c_column] == 7).astype(int)
-
-                #Log counts for monitoring
-                value_counts = data[c_column].value_counts()
-                self.logger.info(f"Value counts for {c_column}:\n{value_counts}")
-
-            return data 
-        
-        except Exception as e:
-            self.logger.error(f"Error in encoding class columns: {str(e)}")
-            raise 
-                
-        
+                     # Ensure column is numeric, coercing errors to NaN
+                     # This is important before numeric comparisons or subtractions
+                     original_dtype = data[c_column].dtype
+                     data[c_column] = pd.to_numeric(data[c_column], errors='coerce')
+                     if data[c_column].dtype != original_dtype:
+                         self.logger.debug(f"Coerced column '{c_column}' to numeric.")
 
 
+                     # --- Logic for encoding standard range (21-28) ---
+                     encoded_col = f'encoded_{c_column}'
+                     # Initialize encoded column to NaN first to distinguish from 0 values later
+                     if encoded_col not in data.columns:
+                          data[encoded_col] = np.nan # Use NaN initially
+
+                     # Create mask for standard range (21-28) and non-NaN
+                     # Apply encoding only where the original value is in the standard range
+                     mask_standard_range = data[c_column].notna() & (data[c_column] >= 21) & (data[c_column] <= 28)
+
+                     # Encode standard values by subtracting 20 where mask is True
+                     data.loc[mask_standard_range, encoded_col] = data.loc[mask_standard_range, c_column] - 20
+                     # Fill remaining NaNs in the encoded column (where not in standard range or original NaN) with 0
+                     data[encoded_col] = data[encoded_col].fillna(0)
+                     # --- End standard encoding logic ---
 
 
-            
+                     # --- Add binary flags for special codes (as requested) ---
+                     self.logger.debug(f"Creating special code flags for column: {c_column}")
+
+                     # Define the special codes and their meanings for logging/understanding
+                     special_codes = {
+                         6: 'water',
+                         16: 'urban',
+                         13: 'marsh',
+                         7: 'erodedSlope'
+                     }
+
+                     for code, meaning in special_codes.items():
+                         flag_col_name = f'{c_column}_is_{meaning}'
+                         # Initialize flag to 0 if it doesn't exist
+                         if flag_col_name not in data.columns:
+                              data[flag_col_name] = 0
+
+                         # Create a mask for the specific code where the original value is NOT NaN
+                         mask_code = data[c_column].notna() & (data[c_column] == code)
+
+                         # Set the flag to 1 where the mask is True
+                         # Using |= operator ensures that if the flag was already 1 (e.g. from running twice), it stays 1
+                         data[flag_col_name] = data[flag_col_name].astype(bool) | mask_code.astype(bool)
+                         data[flag_col_name] = data[flag_col_name].astype(int)
+
+                         # Log counts for specific flags if needed (can be verbose)
+                         # if data[flag_col_name].sum() > 0:
+                         #      self.logger.debug(f"Count for '{flag_col_name}': {data[flag_col_name].sum()}")
 
 
-            
+                     # Log counts for monitoring original column values (optional but good for debugging)
+                     # value_counts = data[c_column].value_counts(dropna=False).sort_index() # Include NaN counts
+                     # self.logger.debug(f"Value counts for original {c_column} after numeric coercion:\n{value_counts}")
+
+
+                  else:
+                      self.logger.warning(f"Classification column '{c_column}' not found in data. Skipping processing for this column.")
+
+
+             self.logger.info("Finished processing classification columns.")
+             return data
+
+         except Exception as e:
+             self.logger.error(f"Error in processing classification columns: {str(e)}")
+             raise
