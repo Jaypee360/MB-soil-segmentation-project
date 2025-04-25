@@ -390,7 +390,7 @@ class DataProcessor:
          # Include C_AGRI here if you want these flags added for the target column too,
          # otherwise, process only feature columns here.
          # Based on your previous code, let's include C_AGRI here for flag creation.
-         class_columns = ['C_SLOPE', 'C_DRAIN', 'C_SALT', 'C_SURFTEXT', 'C_AGRI']
+         class_columns = ['C_SLOPE', 'C_DRAIN', 'C_SALT', 'C_SURFTEXT']
 
          try:
              for c_column in class_columns:

@@ -1,7 +1,6 @@
 
 import logging
 from pathlib import Path
-# Corrected import based on your provided class name
 from src.data_processing import DataProcessor
 from src.train_evaluate import XGBoostTrainer # Assuming this is the correct import path
 
@@ -127,16 +126,16 @@ def run_pipeline_three_way_split(data_filepath: str, target_column: str):
         # Do not return, training might have succeeded.
 
 
-    # --- 6. Save Model (Optional) ---
-    # logger.info("Saving the trained model...")
-    # try:
-    #     # Save the trained model using the XGBoostTrainer's save_model method
-    #     # This method handles MLflow model logging and registration
-    #     # Use the final_model_trainer instance for saving
-    #     model_uri = final_model_trainer.save_model(trained_model, model_name="soil_capability_final_model") # Choose a model name
-    #     logger.info(f"Model saved to MLflow: {model_uri}")
-    # except Exception as e:
-    #     logger.error(f"Pipeline failed during model saving: {e}")
+     #--- 6. Save Model (Optional) ---
+        logger.info("Saving the trained model...")
+    try:
+        # Save the trained model using the XGBoostTrainer's save_model method
+        # This method handles MLflow model logging and registration
+        # Use the final_model_trainer instance for saving
+        model_uri = final_model_trainer.save_model(trained_model, model_name="soil_capability_final_model") # Choose a model name
+        logger.info(f"Model saved to MLflow: {model_uri}")
+    except Exception as e:
+         logger.error(f"Pipeline failed during model saving: {e}")
 
 
     logger.info("Full pipeline execution finished.")
@@ -144,7 +143,7 @@ def run_pipeline_three_way_split(data_filepath: str, target_column: str):
 
 if __name__ == "__main__":
     # Define the path to your full dataset and the target column
-    data_file = "Soil_Survey_Manitoba.csv"  # The full ~100k dataset
+    data_file = "Soil_Survey_Manitoba.csv"  
     target = "C_AGRI" # Confirm this is the correct target column name
 
     # Ensure the data file exists
