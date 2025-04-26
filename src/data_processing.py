@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder # Needed for target encoding if C_AGRI isn't 0-based numerical
+from collections import Counter # Import Counter to check class counts
 
 class DataProcessor:
     """
@@ -143,6 +144,8 @@ class DataProcessor:
 
             # Step 4: Classification Processing (Standard encoding and flags)
             cols_before = set(processed_data.columns)
+            # Note: classification_processing does NOT process the target column C_AGRI for flags
+            # as the target is handled by LabelEncoder later.
             processed_data = self.classification_processing(processed_data)
             cols_after = set(processed_data.columns)
             newly_created_step4 = cols_after - cols_before
@@ -167,9 +170,11 @@ class DataProcessor:
                  self.logger.info(f"One-Hot Encoding remaining categorical columns: {categorical_cols_for_ohe}")
                  # Handle potential NaNs in categorical columns before one-hot encoding
                  for col in categorical_cols_for_ohe:
-                     processed_data[col] = processed_data[col].fillna('Missing') # Or use a more sophisticated imputation
+                     # Fill NaN with 'Missing' string
+                     processed_data[col] = processed_data[col].fillna('Missing')
 
                  cols_before_ohe = set(processed_data.columns)
+                 # Use dummy_na=False as NaNs are filled with 'Missing' string
                  processed_data = pd.get_dummies(processed_data, columns=categorical_cols_for_ohe, dummy_na=False)
                  cols_after_ohe = set(processed_data.columns)
                  newly_created_by_ohe = cols_after_ohe - cols_before_ohe
@@ -196,10 +201,13 @@ class DataProcessor:
             # This step remains the same as it's crucial for the model, regardless of other columns
             # It ensures the target column is in the correct format and handles NaNs in target.
             if self.target_column in processed_data.columns:
+                 # Check if target needs encoding (is not numeric or not 0-based)
                  if not pd.api.types.is_numeric_dtype(processed_data[self.target_column]) or (processed_data[self.target_column].min() != 0 if pd.api.types.is_numeric_dtype(processed_data[self.target_column]) else True):
                     self.logger.info(f"Encoding target column '{self.target_column}' using LabelEncoder.")
+                    # Ensure target values are strings for LabelEncoder and handle NaNs
                     target_values_str = processed_data[self.target_column].astype(str).replace('nan', np.nan)
                     valid_target_values = target_values_str.dropna()
+
                     if not valid_target_values.empty:
                         self.label_encoder.fit(valid_target_values)
                         if processed_data[self.target_column].isna().any():
@@ -211,6 +219,7 @@ class DataProcessor:
                              if not valid_target_values.empty: self.label_encoder.fit(valid_target_values)
 
                         if not valid_target_values.empty:
+                             # Transform the target column using the fitted encoder
                              processed_data[self.target_column] = self.label_encoder.transform(processed_data[self.target_column].astype(str))
                              self.logger.info(f"Encoded target classes (mapping): {dict(zip(self.label_encoder.classes_, self.label_encoder.transform(self.label_encoder.classes_)))}")
                              self.logger.info(f"Encoded target values sample: {processed_data[self.target_column].head()}")
@@ -283,25 +292,37 @@ class DataProcessor:
 
 
         try:
-            # Perform the initial Train+Validation / Test split
-            # Stratify if it's a classification target (check if y is suitable for stratification)
+            # Determine if stratification is possible and appropriate
             stratify_y = None
-            if pd.api.types.is_numeric_dtype(y_full) and y_full.nunique() > 1 and y_full.nunique() < 50: # Arbitrary limit for stratification
-                 self.logger.info("Stratifying split based on target distribution.")
-                 stratify_y = y_full
-            elif pd.api.types.is_numeric_dtype(y_full) and y_full.nunique() >= 50:
-                 self.logger.warning("Target has too many unique values for stratification. Skipping stratification.")
+            if pd.api.types.is_numeric_dtype(y_full) and y_full.nunique() > 1:
+                 class_counts = Counter(y_full)
+                 min_class_count = min(class_counts.values())
+
+                 self.logger.info(f"Split data: Class counts: {class_counts}") # Debug log
+                 self.logger.info(f"Split data: Minimum class count: {min_class_count}") # Debug log
+
+                 # Only stratify if the minimum class size is at least 2
+                 # and the number of unique classes is not excessively large
+                 if min_class_count >= 2 and y_full.nunique() < 50: # Arbitrary limit for stratification
+                     self.logger.info("Stratifying split based on target distribution.")
+                     stratify_y = y_full
+                 elif min_class_count < 2:
+                      self.logger.warning(f"Least populated class in target has only {min_class_count} member(s). Cannot stratify.")
+                 elif y_full.nunique() >= 50:
+                      self.logger.warning("Target has too many unique values for stratification. Skipping stratification.")
             elif not pd.api.types.is_numeric_dtype(y_full):
                  self.logger.warning("Target is not numeric. Cannot stratify.")
             else:
                  self.logger.warning("Target has only one unique value or is not suitable for stratification. Skipping stratification.")
+
+            self.logger.info(f"Split data: Value of stratify_y before train_test_split: {'None' if stratify_y is None else 'y_full'}") # Debug log
 
 
             X_train_val, X_test, y_train_val, y_test = train_test_split(
                 X_full, y_full,
                 test_size=test_size,
                 random_state=random_state if random_state is not None else self.random_state,
-                stratify=stratify_y
+                stratify=stratify_y # Use stratify_y which is None if stratification is not possible/appropriate
             )
 
             self.logger.info(f"Split complete. Train+Validation set shape: {X_train_val.shape}, Test set shape: {X_test.shape}")
@@ -331,9 +352,13 @@ class DataProcessor:
          for code_meaning in management_codes.values(): data[f'has_{code_meaning}'] = 0
          for mancon_col in ['MANCON1', 'MANCON2', 'MANCON3']:
              if mancon_col in data.columns:
-                 data[mancon_col] = data[mancon_col].astype(str).str.strip().str.upper()
+                 # Ensure column is string type before string operations
+                 # Replace 'NAN' string with actual NaN before fillna
+                 data[mancon_col] = data[mancon_col].astype(str).str.strip().str.upper().replace('NAN', np.nan)
                  for code, meaning in management_codes.items():
-                     mask = data[mancon_col].str.contains(code, na=False, regex=False)
+                     # Check for presence of code, handling potential NaNs gracefully
+                     # Use .str.contains on the string representation, treating NaN as False
+                     mask = data[mancon_col].astype(str).str.contains(code, na=False, regex=False)
                      data.loc[mask, f'has_{meaning}'] = 1
          return data
 
@@ -346,14 +371,17 @@ class DataProcessor:
          management_list = ['F', 'W', 'T', 'C', 'B']
          mancon_columns = ['MANCON1', 'MANCON2', 'MANCON3']
          extent_columns = ['EXTENT1', 'EXTENT2', 'EXTENT3']
-         data[mancon_columns] = data[mancon_columns].fillna('')
-         data[mancon_columns] = data[mancon_columns].applymap(lambda x: x.replace(" ", "") if isinstance(x, str) else x)
+         # Use .map instead of .applymap
+         # Fill NaN with empty string for string operations, then strip spaces
+         data[mancon_columns] = data[mancon_columns].fillna('').map(lambda x: x.replace(" ", "") if isinstance(x, str) else x)
          for extent_col in extent_columns:
              if extent_col in data.columns: data[extent_col] = pd.to_numeric(data[extent_col], errors='coerce').fillna(0)
              else: data[extent_col] = 0
          for mancon, extent in zip(mancon_columns, extent_columns):
              if mancon in data.columns:
-                 total_counts = data[mancon].apply(lambda x: sum(x.count(code) for code in management_list) if isinstance(x, str) else 0)
+                 # Ensure mancon column is string type for .str accessor
+                 # Count occurrences of any code in management_list
+                 total_counts = data[mancon].astype(str).str.count('|'.join(management_list)).fillna(0) # Count occurrences of any code
                  data[f'W_{mancon}'] = total_counts * data[extent] / 100
              else: data[f'W_{mancon}'] = 0
          weighted_cols_to_sum = [col for col in [f'W_{mc}' for mc in mancon_columns] if col in data.columns]
@@ -370,8 +398,10 @@ class DataProcessor:
          category_mapping = {"N": 1, "L": 2, "M": 3, "H": 4, "S": 5}
          if 'ERPOLY' in data.columns:
              data['ERPOLY_missing'] = data['ERPOLY'].isna().astype(int)
+             # Map categories to numbers, fill missing (including those not in mapping) with 0
              data['encoded_ERPOLY'] = data['ERPOLY'].map(category_mapping).fillna(0)
          else:
+             # If ERPOLY column doesn't exist, create encoded column and missing flag with default values
              data['encoded_ERPOLY'] = 0
              data['ERPOLY_missing'] = 1
          return data # Ensure you return the DataFrame
@@ -379,17 +409,14 @@ class DataProcessor:
 
     def classification_processing(self, data: pd.DataFrame) -> pd.DataFrame:
          """
-         Processes classification columns (C_SLOPE etc.) and potentially the target (C_AGRI)
+         Processes classification columns (C_SLOPE etc.)
          by encoding standard values (21-28 -> 1-8) and creating binary flags for special codes (6, 7, 13, 16).
          Accepts a DataFrame and returns the modified DataFrame.
-         NOTE: Target encoding for the model (e.g., mapping 'Good'/'Poor' to 0/1) should
-         be handled by self.label_encoder in the main preprocess method after calling this.
+         NOTE: This method does NOT process the target column (C_AGRI) for flags;
+         the target is handled by self.label_encoder in the main preprocess method.
          """
          self.logger.info("Processing classification columns...")
-         # Define the classification columns to process
-         # Include C_AGRI here if you want these flags added for the target column too,
-         # otherwise, process only feature columns here.
-         # Based on your previous code, let's include C_AGRI here for flag creation.
+         # Define the classification columns to process (excluding the target C_AGRI)
          class_columns = ['C_SLOPE', 'C_DRAIN', 'C_SALT', 'C_SURFTEXT']
 
          try:
@@ -399,6 +426,7 @@ class DataProcessor:
                      # Ensure column is numeric, coercing errors to NaN
                      # This is important before numeric comparisons or subtractions
                      original_dtype = data[c_column].dtype
+                     # Convert to numeric, coercing errors. Handle potential string representations of numbers.
                      data[c_column] = pd.to_numeric(data[c_column], errors='coerce')
                      if data[c_column].dtype != original_dtype:
                          self.logger.debug(f"Coerced column '{c_column}' to numeric.")
@@ -418,7 +446,8 @@ class DataProcessor:
                      data.loc[mask_standard_range, encoded_col] = data.loc[mask_standard_range, c_column] - 20
                      # Fill remaining NaNs in the encoded column (where not in standard range or original NaN) with 0
                      data[encoded_col] = data[encoded_col].fillna(0)
-                     # --- End standard encoding logic ---
+                     # Ensure encoded column is integer type if appropriate
+                     # data[encoded_col] = data[encoded_col].astype(int) # Consider if you want int or float
 
 
                      # --- Add binary flags for special codes (as requested) ---
