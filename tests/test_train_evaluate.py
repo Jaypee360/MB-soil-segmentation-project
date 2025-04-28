@@ -20,22 +20,20 @@ def dummy_data_splits():
     y_test = pd.Series(np.random.randint(0, 3, 50))
     return X_train, X_test, y_train, y_test
 
-# --- Tests for XGBoostTrainer ---
-
 # Patch mlflow methods globally for tests in this file
 @patch('mlflow.set_tracking_uri')
 @patch('mlflow.xgboost.autolog')
-@patch('mlflow.start_run')
-@patch('mlflow.log_params')
-@patch('mlflow.log_metrics')
-@patch('mlflow.xgboost.log_model')
-@patch('mlflow.register_model')
-@patch('mlflow.log_artifact')
-@patch('matplotlib.pyplot.savefig') # Mock plotting functions
-@patch('matplotlib.pyplot.close')
-@patch('seaborn.heatmap')
-@patch('seaborn.barplot')
-@patch('pandas.DataFrame.to_csv') # Mock saving history dataframe in optimize_hyperparameters
+@patch('mlflow.start_run') # Global patch
+@patch('mlflow.log_params') # Global patch
+@patch('mlflow.log_metrics') # Global patch
+@patch('mlflow.xgboost.log_model') # Global patch
+@patch('mlflow.register_model') # Global patch
+@patch('mlflow.log_artifact') # Global patch
+@patch('matplotlib.pyplot.savefig') # Global patch
+@patch('matplotlib.pyplot.close') # Global patch
+@patch('seaborn.heatmap') # Global patch
+@patch('seaborn.barplot') # Global patch
+@patch('pandas.DataFrame.to_csv') # Global patch
 def test_trainer_initialization(
     mock_to_csv, mock_barplot, mock_heatmap, mock_plt_close, mock_plt_savefig,
     mock_log_artifact, mock_register_model, mock_log_model, mock_log_metrics, mock_log_params, mock_start_run,
@@ -48,12 +46,15 @@ def test_trainer_initialization(
     assert trainer.experiment_name == "test_exp"
 
 
-@patch('mlflow.start_run')
-@patch('mlflow.log_params')
-@patch('mlflow.xgboost.log_model')
+@patch('mlflow.start_run') # Local patch for this test
+@patch('mlflow.log_params') # Local patch for this test
+@patch('mlflow.xgboost.log_model') # Local patch for this test
 def test_trainer_train(
-    mock_log_model, mock_log_params, mock_start_run,
-    dummy_data_splits # Use the fixture
+    # Arguments must be in reverse order of the local patches above
+    mock_log_model,
+    mock_log_params,
+    mock_start_run,
+    dummy_data_splits # Pytest fixture comes after all mocks
 ):
     """Test the model training method."""
     X_train, X_test, y_train, y_test = dummy_data_splits
@@ -65,6 +66,7 @@ def test_trainer_train(
     # Mock the actual xgb.XGBClassifier fit method
     with patch('xgboost.XGBClassifier') as mock_xgb_classifier:
         mock_model_instance = MagicMock()
+        mock_model_instance.fit = MagicMock() # Explicitly mock the fit method
         mock_xgb_classifier.return_value = mock_model_instance
 
         params = {'eta': 0.1, 'max_depth': 3}
@@ -82,6 +84,7 @@ def test_trainer_train(
         assert args[1] is y_train
         assert 'eval_set' in kwargs
         assert kwargs['early_stopping_rounds'] == 10
+        assert kwargs['verbose'] == 100 # Check verbose is passed
 
         # Check if MLflow methods were called
         mock_start_run.assert_called_once_with(nested=True)
@@ -101,27 +104,37 @@ def test_trainer_train_mismatched_shapes():
         trainer.train(X_train, y_train)
 
 
-@patch('mlflow.start_run')
-@patch('mlflow.log_metrics')
-@patch('mlflow.log_artifact') # Mock log_artifact for plots/feature importance
-@patch('xgboost.XGBClassifier.predict') # Mock the predict call
-@patch('sklearn.metrics.accuracy_score') # Mock metric calculations
-@patch('sklearn.metrics.f1_score')
-@patch('sklearn.metrics.confusion_matrix')
-@patch('matplotlib.pyplot.savefig') # Mock plotting
-@patch('matplotlib.pyplot.close')
-@patch('seaborn.heatmap')
-@patch('seaborn.barplot')
+# Local patches for test_trainer_evaluate (order matters for function arguments)
+@patch('mlflow.start_run') # Local patch
+@patch('mlflow.log_metrics') # Local patch
+@patch('mlflow.log_artifact') # Local patch
+@patch('sklearn.metrics.accuracy_score') # Local patch
+@patch('sklearn.metrics.f1_score') # Local patch
+@patch('sklearn.metrics.confusion_matrix') # Local patch
+@patch('matplotlib.pyplot.savefig') # Local patch
+@patch('matplotlib.pyplot.close') # Local patch
+@patch('seaborn.heatmap') # Local patch
+@patch('seaborn.barplot') # Local patch
 def test_trainer_evaluate(
-    mock_barplot, mock_heatmap, mock_plt_close, mock_plt_savefig, mock_confusion_matrix, mock_f1_score, mock_accuracy_score,
-    mock_log_artifact, mock_log_metrics, mock_start_run, mock_predict,
-    dummy_data_splits # Use fixture
+    # Arguments must be in reverse order of the local patches above
+    mock_barplot, # Last patch
+    mock_heatmap,
+    mock_plt_close,
+    mock_plt_savefig,
+    mock_confusion_matrix,
+    mock_f1_score,
+    mock_accuracy_score,
+    mock_log_artifact,
+    mock_log_metrics,
+    mock_start_run, # First patch
+    dummy_data_splits # Pytest fixture comes after all mocks
 ):
     """Test the model evaluation method."""
     X_train, X_test, y_train, y_test = dummy_data_splits
     trainer = XGBoostTrainer(experiment_name="test_exp")
     mock_model = MagicMock() # Mock the trained model object
     mock_model.feature_importances_ = np.array([0.1] * 10) # Add dummy importances
+    # This is the correct way to mock the predict call on the instance passed to evaluate
     mock_model.predict.return_value = y_test # Mock predictions to be perfect for simplicity
 
     # Mock MLflow run context
@@ -133,7 +146,7 @@ def test_trainer_evaluate(
 
     metrics = trainer.evaluate(mock_model, X_test, y_test, dataset_name='test')
 
-    # Check if predict was called
+    # Check if predict was called on the mock model instance
     mock_model.predict.assert_called_once_with(X_test)
 
     # Check if metrics were calculated
@@ -154,6 +167,10 @@ def test_trainer_evaluate(
     mock_log_artifact.assert_any_call('confusion_matrix_test.png')
     mock_plt_savefig.assert_any_call('feature_importance.png')
     mock_log_artifact.assert_any_call('feature_importance.png')
+    mock_barplot.assert_called_once() # Check if barplot was called for feature importance
+    mock_heatmap.assert_called_once() # Check if heatmap was called for confusion matrix
+    mock_plt_close.assert_called() # Check if plt.close was called (should be called twice)
+
 
     # Check the returned metrics
     assert metrics == {
