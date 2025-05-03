@@ -495,3 +495,27 @@ class DataProcessor:
          except Exception as e:
              self.logger.error(f"Error in processing classification columns: {str(e)}")
              raise
+
+# Stand alone execution block at the end of the script for independent execution of the script
+if __name__ == "__main__":
+    # Using a smaller sample data to test the class
+    data_file_path = "sample_100_mb.csv"
+    target_variable = "C_AGRI"
+
+    # Ensure the file exists before proceeding
+    if not Path(data_file_path).exists():
+        print(f'Error: Data file not found at: {data_file_path}')
+    else:
+        print(f'Running Dataprocessor independently with data from: {data_file_path}')
+        try:
+            # Create an instance of Dataprocessor
+            processor = DataProcessor(
+                data_path=Path(data_file_path),
+                target_column=target_variable
+            )
+            # Run the preprocessing step
+            processed_data = processor.preprocess()
+            print(f'Preprocessing complete. Processed Data shape: {processed_data.shape}')
+
+        except Exception as e:
+            print(f"An error occurred during data processing:: {e}")
