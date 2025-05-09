@@ -502,6 +502,9 @@ if __name__ == "__main__":
     data_file_path = "sample_100_mb.csv"
     target_variable = "C_AGRI"
 
+    # Defined path where preprocessed data will be saved
+    output_file_path = 'preprocessed_soil_data.csv'
+
     # Ensure the file exists before proceeding
     if not Path(data_file_path).exists():
         print(f'Error: Data file not found at: {data_file_path}')
@@ -516,6 +519,11 @@ if __name__ == "__main__":
             # Run the preprocessing step
             processed_data = processor.preprocess()
             print(f'Preprocessing complete. Processed Data shape: {processed_data.shape}')
+
+            # Save preprocessed data to a csv file
+            print(f'Saving processed data to: {output_file_path}')
+            processed_data.to_csv(output_file_path, index=False)
+            print('Processsed data saved successfully.')
 
         except Exception as e:
             print(f"An error occurred during data processing:: {e}")
