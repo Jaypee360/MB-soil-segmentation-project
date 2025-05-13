@@ -499,7 +499,7 @@ class DataProcessor:
 # Stand alone execution block at the end of the script for independent execution of the script
 if __name__ == "__main__":
     # Using a smaller sample data to test the class
-    data_file_path = "sample_100_mb.csv"
+    data_file_path = r"notebooks\sample_100_mb.csv"
     target_variable = "C_AGRI"
 
     # Defined path where preprocessed data will be saved
