@@ -520,9 +520,15 @@ if __name__ == "__main__":
             processed_data = processor.preprocess()
             print(f'Preprocessing complete. Processed Data shape: {processed_data.shape}')
 
+            # Keep columns that are useful to the model
+            keywords = ['mancon', 'erpoly', 'c_slope', 'c_drain','c_salt',
+                        'c_surftext', 'gen_ratin1', 'has', 'originl', 'c_agri']
+            processed_data_2 = processed_data[[col for col in processed_data.columns if any(kw in col.lower() for kw in keywords)]]
+            processed_data_2 = processed_data_2.drop(columns=[col for col in processed_data_2.columns if 'PHASE' in col])
+
             # Save preprocessed data to a csv file
             print(f'Saving processed data to: {output_file_path}')
-            processed_data.to_csv(output_file_path, index=False)
+            processed_data_2.to_csv(output_file_path, index=False)
             print('Processsed data saved successfully.')
 
         except Exception as e:
