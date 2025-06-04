@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb 
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Tuple, List, Optional
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate, cross_val_score
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
@@ -505,3 +506,54 @@ class XGBoostTrainer:
         }
         self.logger.info("Using default XGBoost classification parameters")
         return default_params
+    
+if __name__ == "__main__":
+    # Initialize logger
+    logger = logging.getLogger(__name__)
+
+    # Defining the path to the preprocessed data file and target column
+    # The file should be the output of data_processing.py script
+    preprocessed_data_path = "10k_preprocessed_soil_data.csv"
+    target_variable = "C_AGRI"
+
+    if not Path(preprocessed_data_path).exists():
+        logger.error(f"Preprocessed data file not found at: {preprocessed_data_path}")
+    else:
+        logger.info(f"Starting standalone model training and evaluation with data from: {preprocessed_data_path}")
+        try:
+            # Load the preprocessed data
+            data = pd.read_csv(preprocessed_data_path)
+            logger.info(f"Loaded preprocessed data with shape: {data.shape}")
+
+            # Initialize the XGBoostTrainer
+            trainer = XGBoostTrainer(experiment_name="standalone_training_run")
+
+            # Prepare the data (split into train and test sets)
+            X_train, X_test, y_train, y_test = trainer.prepare_data(
+                data=data,
+                target_col=target_variable,
+                test_size=0.2,
+                random_state=419
+            )
+            logger.info("Data prepared for training")
+
+            # Train the model using default parameters
+            # You could also define parameters in a dictionary
+            # e.g custom_params = {'learning_rate':0.05, max_depth: 5}
+            # trained_model = trainer.train(X_train, y_train, params=custom_params)
+            trained_model = trainer.train(X_train, y_train)
+            logger.info("Model training complete.")
+
+            # Evaluate the model on the test set
+            test_metrics = trainer.evaluate(trained_model, X_test, y_test, dataset_name='test_set')
+            logger.info(f"Model evaluation complete. Test Metrics: {test_metrics}")
+
+            # Save the trained model
+            model_uri = trainer.save_model(trained_model, model_name='standalone_soil_classifier')
+            logger.info(f"Model saved to MLflow: {model_uri}")
+
+        except Exception as e:
+            logger.error(f"An error occurred during standalone training/evaluation: {e}")
+    
+
+
