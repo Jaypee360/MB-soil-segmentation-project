@@ -89,7 +89,7 @@ class XGBoostTrainer:
     def train(self,
               X_train: pd.DataFrame,
               y_train: pd.Series,
-              params: Optional[Dict] = None) -> xgb.XGBRegressor:
+              params: Optional[Dict] = None) -> xgb.XGBClassifier:
         """
         Train XGBoost model with MLflow tracking
         
@@ -208,7 +208,7 @@ class XGBoostTrainer:
 
             
     def save_model(self,
-                  model: xgb.XGBRegressor,
+                  model: xgb.XGBClassifier,
                   model_name: str,
                   artifact_path: str = "models") -> str:
         """
@@ -259,7 +259,7 @@ class XGBoostTrainer:
 
 
     def _log_feature_importance(self,
-                             model: xgb.XGBRegressor,
+                             model: xgb.XGBClassifier,
                              feature_names: List[str]) -> None:
         """Logs feature importance scores and plots to MLflow
         Paramseters: 
@@ -330,7 +330,7 @@ class XGBoostTrainer:
             # Define metrics to evaluate 
             scoring = {
                 'accuracy':'accuracy',
-                'f1_weighted':'f1_weigted',
+                'f1_weighted':'f1_weighted',
                 'f1_macro':'f1_macro'
             }
 
@@ -348,7 +348,7 @@ class XGBoostTrainer:
             mean_metrics = {
                 'mean_cv_accuracy':np.mean(cv_results['test_accuracy']),
                 'mean_cv_f1_weighted':np.mean(cv_results['test_f1_weighted']),
-                'mean_cv_f1_macro':np.meean(cv_results['test_f1_macro'])
+                'mean_cv_f1_macro':np.mean(cv_results['test_f1_macro'])
             }
 
             # Log to MLflow
