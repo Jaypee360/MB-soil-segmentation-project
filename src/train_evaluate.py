@@ -22,7 +22,7 @@ class XGBoostTrainer:
     
     def __init__(self, 
                  experiment_name: str = "soil_viability_prediction",
-                 tracking_uri: str = "sqlite:///mlflow.db"):
+                 tracking_uri: str = "http://localhost:5000"):
         """
         Initialize trainer with MLflow settings
         
