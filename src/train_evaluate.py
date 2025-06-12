@@ -3,11 +3,16 @@ import mlflow.xgboost
 import logging
 import optuna 
 import json
+import joblib
 import numpy as np
 import pandas as pd
 import xgboost as xgb 
 from datetime import datetime
 from pathlib import Path
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif
+from sklearn.feature_selection import RFE
+from sklearn.ensemble import RandomForestClassifier
 from typing import Dict, Tuple, List, Optional
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate, cross_val_score
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
@@ -37,6 +42,9 @@ class XGBoostTrainer:
         self.experiment_name = experiment_name
         mlflow.set_tracking_uri(tracking_uri)
         mlflow.xgboost.autolog()  # Enable automatic logging
+        # Attributes for dimentionality reduction 
+        self.dim_reducer = None 
+        self.feature_selector = None 
 
     def prepare_data(self, 
                     data: pd.DataFrame,
@@ -85,7 +93,80 @@ class XGBoostTrainer:
         except Exception as e:
             self.logger.error(f"Error in data preparation: {str(e)}")
             raise 
-        
+    def apply_dimentionality_reduction(self,
+                                       X_train: pd.DataFrame,
+                                       y_trin: pd.Series,
+                                       X_test: pd.DataFrame,
+                                       method: str='selectkbest',
+                                       n_features: int = 30) -> tuple:
+        """
+        Apply dimensionality reduction to features
+
+        Parameters
+        ----------
+        method : str
+             'pca', 'selectkbest', 'mutual_info', or 'rfe'
+        n_features: int
+            Number of features/components to keep
+
+        Returns:
+        -------
+        tuple: (X_train_reduced, X_test_reduced)
+        """
+        try:
+            self.logger.info(f"Applying {method} dimensionality reduction...")
+
+            with mlflow.start_run(nested=True):
+                mlflow.log_params({
+                    'dim_reduction_method': method,
+                    'original_features':X_train.shape[1],
+                    'target_features': n_features
+                })
+
+                if method == 'pca':
+                    self.dim_reducer = PCA(n_components=n_features, random_state=419)
+                    X_train_reduced = self.dim_reducer.fit_transform(X_train)
+                    X_train_reduced = self.dim_reducer.transform(X_test)
+
+                    # Log explained variance
+                    explained_var = sum(self.dim_reducer.explained_variance_ratio_)
+                    mlflow.log_metric('explained_variance_ratio', explained_var)
+
+                elif method == 'selectkbest':
+                    self.feature_selector = SelectKBest(score_func=f_classif, k=n_features)
+                    X_train_reduced = self.feature_selector.fit_transform(X_train, y_train)
+                    x_test_reduced = self.feature_selector.transform(X_test)
+
+                elif method == 'mutual_info':
+                    self.feature_selector = SelectKBest(score_func=mutual_info_classif, k=n_features)
+                    X_train_reduced = self.feature_selector.fit_transform(X_train, y_train)
+                    X_test_reduced = self.feature_selector.transform(X_test)
+
+                elif method == 'rfe':
+                    rf_estimator = RandomForestClassifier(n_estimators=50, random_state=419)
+                    self.feature_selector = RFE(estimator=rf_estimator, n_features_to_select=n_features)
+                    X_train_reduced = self.feature_selector.fit_transform(X_train, y_train)
+                    X_test_reduced = self.feature_selector.transform(X_test)
+
+                else:
+                    raise ValueError(f'Unknown method: {method}')
+                
+                # Convert back to Dataframes 
+                feature_names = [f'feature_{i}' for i in range(X_train_reduced.shape[1])]
+                X_train_reduced = pd.DataFrame(X_train_reduced, columns=feature_names, index=X_train.index)
+                X_test_reduced = pd.DataFrame(X_test_reduced, columns=feature_names, index=X_test.index)
+
+                mlflow.log_metric('final_features', X_train_reduced.shape[1])
+
+                self.logger.info(f'Features reduced from {X_train.shape[1]} to {X_train_reduced.shape[1]}')
+
+                return X_train_reduced, X_test_reduced
+            
+        except Exception as e:
+            self.logger.error(f"Error in dimensionality reduction: {str(e)}")
+            raise
+
+
     def train(self,
               X_train: pd.DataFrame,
               y_train: pd.Series,
@@ -525,8 +606,11 @@ if __name__ == "__main__":
             data = pd.read_csv(preprocessed_data_path)
             logger.info(f"Loaded preprocessed data with shape: {data.shape}")
 
+            # Create versioned experiment name
+            experiment_name = f"soil_viability_v1_{datetime.now().strftime('%Y%m%d')}"
+
             # Initialize the XGBoostTrainer
-            trainer = XGBoostTrainer(experiment_name="standalone_training_run")
+            trainer = XGBoostTrainer(experiment_name=experiment_name)
 
             # Prepare the data (split into train and test sets)
             X_train, X_test, y_train, y_test = trainer.prepare_data(
