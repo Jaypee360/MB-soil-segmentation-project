@@ -41,8 +41,9 @@ class XGBoostTrainer:
         self.logger = logging.getLogger(__name__)
         self.experiment_name = experiment_name
         mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(self.experiment_name)
         mlflow.xgboost.autolog()  # Enable automatic logging
-        # Attributes for dimentionality reduction 
+        # Attributes for dimensionality reduction 
         self.dim_reducer = None 
         self.feature_selector = None 
 
@@ -50,7 +51,7 @@ class XGBoostTrainer:
                     data: pd.DataFrame,
                     target_col: str = 'C_AGRI',
                     test_size: float = 0.2,
-                    random_state: int = 42) -> tuple:
+                    random_state: int = 419) -> tuple:
         """
         Prepare data for training
         
@@ -93,9 +94,9 @@ class XGBoostTrainer:
         except Exception as e:
             self.logger.error(f"Error in data preparation: {str(e)}")
             raise 
-    def apply_dimentionality_reduction(self,
+    def apply_dimensionality_reduction(self,
                                        X_train: pd.DataFrame,
-                                       y_trin: pd.Series,
+                                       y_train: pd.Series,
                                        X_test: pd.DataFrame,
                                        method: str='selectkbest',
                                        n_features: int = 30) -> tuple:
@@ -126,7 +127,7 @@ class XGBoostTrainer:
                 if method == 'pca':
                     self.dim_reducer = PCA(n_components=n_features, random_state=419)
                     X_train_reduced = self.dim_reducer.fit_transform(X_train)
-                    X_train_reduced = self.dim_reducer.transform(X_test)
+                    X_test_reduced = self.dim_reducer.transform(X_test)
 
                     # Log explained variance
                     explained_var = sum(self.dim_reducer.explained_variance_ratio_)
@@ -135,7 +136,7 @@ class XGBoostTrainer:
                 elif method == 'selectkbest':
                     self.feature_selector = SelectKBest(score_func=f_classif, k=n_features)
                     X_train_reduced = self.feature_selector.fit_transform(X_train, y_train)
-                    x_test_reduced = self.feature_selector.transform(X_test)
+                    X_test_reduced = self.feature_selector.transform(X_test)
 
                 elif method == 'mutual_info':
                     self.feature_selector = SelectKBest(score_func=mutual_info_classif, k=n_features)
@@ -211,12 +212,11 @@ class XGBoostTrainer:
                 self.logger.info(f"MLflow run ID:{run.info.run_id}")
                 mlflow.log_params(model_params)
 
-                model = xgb.XGBClassifier(**model_params, random_state=42)
+                model = xgb.XGBClassifier(**model_params, early_stopping_rounds=10)
                 model.fit(
                     X_train,
                     y_train,
                     eval_set=[(X_train, y_train)],
-                    early_stopping_rounds=10,
                     verbose=100
                 )
                 # Log the trained model
@@ -403,7 +403,7 @@ class XGBoostTrainer:
             model_params['num_class'] = len(y.unique())
 
             # Use stratified k-fold for classification
-            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=419)
 
             # Create base classifier 
             model = xgb.XGBClassifier(**model_params)
@@ -486,12 +486,12 @@ class XGBoostTrainer:
                     'n_estimators': trial.suggest_int('n_estimators', 50, 500),
                     'num_class': len(y.unique()),
                     'objective': 'multi:softmax',
-                    'random_state': 42
+                    'random_state': 419
 
                 }
 
                 # Create the cross-validation strategy 
-                cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+                cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=419)
 
                 # Intialize scores list
                 scores = []
@@ -571,6 +571,7 @@ class XGBoostTrainer:
             'objective':'multi:softmax',
             'learning_rate':0.1,
             'max_depth':6,
+            'scale_pos_weight': None,
             'n_estimators':100,
 
             # Regularization parameters 
@@ -583,7 +584,7 @@ class XGBoostTrainer:
 
             # Performance parameters
             'n_jobs':-1,
-            'random_state':42,
+            'random_state':419,
         }
         self.logger.info("Using default XGBoost classification parameters")
         return default_params
@@ -594,7 +595,7 @@ if __name__ == "__main__":
 
     # Defining the path to the preprocessed data file and target column
     # The file should be the output of data_processing.py script
-    preprocessed_data_path = "10k_preprocessed_soil_data.csv"
+    preprocessed_data_path = r"C:\Users\JP\Documents\Manitoba Soil Survey Data\MB soil segmentation project\10k_preprocessed_soil_data.csv"
     target_variable = "C_AGRI"
 
     if not Path(preprocessed_data_path).exists():
@@ -604,6 +605,9 @@ if __name__ == "__main__":
         try:
             # Load the preprocessed data
             data = pd.read_csv(preprocessed_data_path)
+
+            # Dropping ORIGINL_RM column because it isn't useful in training 
+            data = data.drop(columns=['ORIGINL_RM'], errors='ignore')
             logger.info(f"Loaded preprocessed data with shape: {data.shape}")
 
             # Create versioned experiment name
@@ -621,19 +625,28 @@ if __name__ == "__main__":
             )
             logger.info("Data prepared for training")
 
+            # Apply dimensionality reduction 
+            X_train_reduced, X_test_reduced = trainer.apply_dimensionality_reduction(
+                X_train=X_train,
+                y_train=y_train,
+                X_test=X_test,
+                method='selectkbest', # Options: 'pca', 'seleckbest', 'manual_info', 'rfe'
+                n_features=30
+            )
+
             # Train the model using default parameters
             # You could also define parameters in a dictionary
             # e.g custom_params = {'learning_rate':0.05, max_depth: 5}
-            # trained_model = trainer.train(X_train, y_train, params=custom_params)
-            trained_model = trainer.train(X_train, y_train)
+            # Train model with reduced features 
+            trained_model = trainer.train(X_train_reduced, y_train)
             logger.info("Model training complete.")
 
             # Evaluate the model on the test set
-            test_metrics = trainer.evaluate(trained_model, X_test, y_test, dataset_name='test_set')
+            test_metrics = trainer.evaluate(trained_model, X_test_reduced, y_test, dataset_name='test_set')
             logger.info(f"Model evaluation complete. Test Metrics: {test_metrics}")
 
             # Save the trained model
-            model_uri = trainer.save_model(trained_model, model_name='standalone_soil_classifier')
+            model_uri = trainer.save_model(trained_model, model_name='standalone_soil_classifier_v1')
             logger.info(f"Model saved to MLflow: {model_uri}")
 
         except Exception as e:
