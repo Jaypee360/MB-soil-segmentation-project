@@ -171,6 +171,8 @@ class XGBoostTrainer:
     def train(self,
               X_train: pd.DataFrame,
               y_train: pd.Series,
+              X_test: pd.DataFrame = None,
+              y_test: pd.Series = None,
               params: Optional[Dict] = None) -> xgb.XGBClassifier:
         """
         Train XGBoost model with MLflow tracking
@@ -213,10 +215,11 @@ class XGBoostTrainer:
                 mlflow.log_params(model_params)
 
                 model = xgb.XGBClassifier(**model_params, early_stopping_rounds=10)
+                eval_set = [(X_test, y_test)] if X_test is not None else [(X_train, y_train)]
                 model.fit(
                     X_train,
                     y_train,
-                    eval_set=[(X_train, y_train)],
+                    eval_set=eval_set,
                     verbose=100
                 )
                 # Log the trained model
@@ -638,7 +641,7 @@ if __name__ == "__main__":
             # You could also define parameters in a dictionary
             # e.g custom_params = {'learning_rate':0.05, max_depth: 5}
             # Train model with reduced features 
-            trained_model = trainer.train(X_train_reduced, y_train)
+            trained_model = trainer.train(X_train_reduced, y_train, X_test_reduced, y_test)
             logger.info("Model training complete.")
 
             # Evaluate the model on the test set
