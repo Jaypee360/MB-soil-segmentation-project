@@ -24,7 +24,7 @@ This project uses machine learning to predict soil viability for farming in Mani
 - Optuna
 - virtualenv (optional but recommended)
 
-![Pipeline Architecture](Pipeline Diagram.png)
+![Pipeline Architecture](Pipeline_Diagram.png)
 
 
 
